@@ -10,6 +10,7 @@ from openai import OpenAI
 import config
 from utils.text import find_best_command_match
 from utils.checks import is_bot_admin
+from fart_game.usage import check_usage, mark_usage
 
 # EST timezone for daily action resets
 EST = ZoneInfo("America/New_York")
@@ -339,42 +340,13 @@ class FunCog(commands.Cog):
         conn.commit()
         conn.close()
 
-    def _ensure_gift_usage_table(self, cur):
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS fart_gift_usage (
-                gifter_id INTEGER NOT NULL,
-                recipient_id INTEGER NOT NULL,
-                gifted_at TEXT NOT NULL,
-                PRIMARY KEY (gifter_id, recipient_id)
-            )
-        """)
-
     def has_gifted_to_this_season(self, gifter_id: int, recipient_id: int) -> bool:
         """True if this gifter already gifted this recipient once this season."""
-        conn = sqlite3.connect("fart_scores.db")
-        cur = conn.cursor()
-        try:
-            self._ensure_gift_usage_table(cur)
-            cur.execute(
-                "SELECT 1 FROM fart_gift_usage WHERE gifter_id = ? AND recipient_id = ?",
-                (gifter_id, recipient_id),
-            )
-            return cur.fetchone() is not None
-        finally:
-            conn.close()
+        allowed, _ = check_usage("fart_gift", gifter_id, peer_id=recipient_id)
+        return not allowed
 
     def mark_gifted_this_season(self, gifter_id: int, recipient_id: int):
-        conn = sqlite3.connect("fart_scores.db")
-        cur = conn.cursor()
-        try:
-            self._ensure_gift_usage_table(cur)
-            cur.execute(
-                "INSERT OR REPLACE INTO fart_gift_usage (gifter_id, recipient_id, gifted_at) VALUES (?, ?, ?)",
-                (gifter_id, recipient_id, datetime.datetime.now().isoformat()),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        mark_usage("fart_gift", gifter_id, peer_id=recipient_id)
 
     def mark_daily_action_used(self, user_id, user_display_name, last_updated):
         """Consume the user's daily fart action without changing their score."""
@@ -1084,41 +1056,15 @@ class FunCog(commands.Cog):
         # Update the last used date in the database
         now = datetime.datetime.now()
         user_id = ctx.author.id
-        command_name = "bullfart"
+
+        allowed, cooldown_msg = check_usage("bullfart", user_id)
+        if not allowed:
+            await ctx.send(f"{ctx.author.mention}, {cooldown_msg}")
+            return
 
         # Connect to the database
         conn = sqlite3.connect("fart_scores.db")
         cur = conn.cursor()
-
-        # Create a table to track command usage if it doesn't exist
-        cur.execute(
-            """CREATE TABLE IF NOT EXISTS command_usage
-                       (user_id INTEGER,
-                        command_name TEXT,
-                        last_used TEXT,
-                        PRIMARY KEY (user_id, command_name))"""
-        )
-
-        # Check if the user has used the command before
-        cur.execute(
-            "SELECT last_used FROM command_usage WHERE user_id=? AND command_name=?",
-            (user_id, command_name),
-        )
-        row = cur.fetchone()
-
-        if row:
-            parsed_datetime = safe_parse_datetime(row[0])
-            if parsed_datetime:
-                last_used_date = parsed_datetime.date()
-                next_available_date = last_used_date + datetime.timedelta(weeks=1)
-                # Check if a week has passed since the last use
-                if next_available_date > get_est_date():
-                    days_remaining = (next_available_date - get_est_date()).days
-                    await ctx.send(
-                        f"{ctx.author.mention}, you can only use this command once a week! You can use it again in **{days_remaining} day{'s' if days_remaining != 1 else ''}**."
-                    )
-                    conn.close()
-                    return
 
         # Get the user's most recent fart from fart_history
         cur.execute(
@@ -1166,10 +1112,7 @@ class FunCog(commands.Cog):
             return
 
         # Update cooldown AFTER successful execution
-        cur.execute(
-            "INSERT OR REPLACE INTO command_usage (user_id, command_name, last_used) VALUES (?, ?, ?)",
-            (user_id, command_name, now.isoformat()),
-        )
+        mark_usage("bullfart", user_id)
 
         conn.commit()
         conn.close()
@@ -1243,44 +1186,30 @@ class FunCog(commands.Cog):
     async def taxes(self, ctx):
         """Take 20% from everyone else and give it all to the fartlord (once per reign)."""
         try:
-            conn = sqlite3.connect("fart_scores.db")
-            cur = conn.cursor()
-            cur.execute("""CREATE TABLE IF NOT EXISTS fart_leader_only_once
-                           (user_id INTEGER PRIMARY KEY, 
-                            user_display_name TEXT
-                           )""")
-
-            # Check the CORRECT table - fart_leader_only_once, not fart_scores
-            cur.execute(
-                "SELECT * FROM fart_leader_only_once WHERE user_id=?", (ctx.author.id,)
-            )
-            row = cur.fetchone()
-
-            if row:
+            allowed, _ = check_usage("taxes", ctx.author.id)
+            if not allowed:
                 await ctx.send(
                     "You have already stolen from the working class during your reign."
                 )
-                conn.close()
                 return
 
+            conn = sqlite3.connect("fart_scores.db")
+            cur = conn.cursor()
             cur.execute("SELECT COUNT(*) FROM fart_scores")
             player_count = cur.fetchone()[0]
+            conn.close()
             if player_count < 2:
                 await ctx.send("Not enough users to tax! Need at least 2 players.")
-                conn.close()
                 return
-
-            cur.execute(
-                "INSERT OR REPLACE INTO fart_leader_only_once (user_id, user_display_name) VALUES (?, ?)",
-                (ctx.author.id, ctx.author.global_name),
-            )
-            conn.commit()
-            conn.close()
 
             result = self.collect_taxes_for_fartlord()
             if result is None:
                 await ctx.send("Not enough users to tax! Need at least 2 players.")
                 return
+
+            mark_usage(
+                "taxes", ctx.author.id, display_name=ctx.author.global_name
+            )
 
             response = (
                 f"💰 **TAXES COLLECTED!** 💰\n\n"
@@ -1312,100 +1241,87 @@ class FunCog(commands.Cog):
                 )
                 return
 
-            conn = sqlite3.connect("fart_scores.db")
-            cur = conn.cursor()
-            cur.execute("""CREATE TABLE IF NOT EXISTS fart_leader_only_once
-                           (user_id INTEGER PRIMARY KEY, 
-                            user_display_name TEXT
-                           )""")
-
-            # Check if user has already used robin command
-            cur.execute(
-                "SELECT * FROM fart_leader_only_once WHERE user_id=?", (ctx.author.id,)
-            )
-            row = cur.fetchone()
-
-            if row:
+            allowed, _ = check_usage("wealth", ctx.author.id)
+            if not allowed:
                 await ctx.send(
                     "You have already used wealth distribution during your reign!"
                 )
+                return
+
+            conn = sqlite3.connect("fart_scores.db")
+            cur = conn.cursor()
+            cur.execute(
+                """SELECT user_id, user_display_name, score 
+               FROM fart_scores 
+               ORDER BY score DESC"""
+            )
+            all_users = cur.fetchall()
+
+            if len(all_users) < 6:
+                await ctx.send(
+                    "Not enough users to redistribute! Need at least 6 players."
+                )
                 conn.close()
                 return
-            else:
+
+            # Split into top 5 and everyone else
+            top_5 = all_users[:5]
+            others = all_users[5:]
+
+            # Calculate total points to take from top 5 (50% — includes you)
+            total_taken = 0
+            top_5_details = []
+
+            for user_id, user_display_name, score in top_5:
+                points_to_take = int(score * 0.50)
+                new_score = score - points_to_take
+                total_taken += points_to_take
+
+                # Update the user's score
                 cur.execute(
-                    "INSERT OR REPLACE INTO fart_leader_only_once (user_id, user_display_name) VALUES (?, ?)",
-                    (ctx.author.id, ctx.author.global_name),
+                    "UPDATE fart_scores SET score=? WHERE user_id=?",
+                    (new_score, user_id),
                 )
-                # Fixed: Changed 'username' to 'user_display_name'
+                top_5_details.append(
+                    f"{user_display_name}: -{points_to_take} points"
+                )
+
+            # Distribute evenly to everyone else
+            points_per_user = total_taken // len(others)
+            remainder = total_taken % len(others)
+
+            others_details = []
+            for i, (user_id, user_display_name, score) in enumerate(others):
+                # Give remainder to first user
+                bonus = points_per_user + (remainder if i == 0 else 0)
+                new_score = score + bonus
+
                 cur.execute(
-                    """SELECT user_id, user_display_name, score 
-                   FROM fart_scores 
-                   ORDER BY score DESC"""
+                    "UPDATE fart_scores SET score=? WHERE user_id=?",
+                    (new_score, user_id),
                 )
-                all_users = cur.fetchall()
+                others_details.append(f"{user_display_name}: +{bonus} points")
 
-                if len(all_users) < 6:
-                    await ctx.send(
-                        "Not enough users to redistribute! Need at least 6 players."
-                    )
-                    conn.close()
-                    return
+            conn.commit()
+            conn.close()
+            mark_usage(
+                "wealth", ctx.author.id, display_name=ctx.author.global_name
+            )
 
-                # Split into top 5 and everyone else
-                top_5 = all_users[:5]
-                others = all_users[5:]
+            # Create response message
+            response = (
+                f"🏹 **ROBIN HOOD REDISTRIBUTION!** 🏹\n\n"
+                f"**Total redistributed:** {total_taken} points\n\n"
+                f"**TOP 5 TAXED (50% each):**\n" + "\n".join(top_5_details) + "\n\n"
+                f"**{len(others)} WORKERS REWARDED:**\n"
+                + "\n".join(others_details[:10])
+            )
 
-                # Calculate total points to take from top 5 (50% — includes you)
-                total_taken = 0
-                top_5_details = []
+            if len(others_details) > 10:
+                response += f"\n...and {len(others_details) - 10} more!"
 
-                for user_id, user_display_name, score in top_5:
-                    points_to_take = int(score * 0.50)
-                    new_score = score - points_to_take
-                    total_taken += points_to_take
-
-                    # Update the user's score
-                    cur.execute(
-                        "UPDATE fart_scores SET score=? WHERE user_id=?",
-                        (new_score, user_id),
-                    )
-                    top_5_details.append(
-                        f"{user_display_name}: -{points_to_take} points"
-                    )
-
-                # Distribute evenly to everyone else
-                points_per_user = total_taken // len(others)
-                remainder = total_taken % len(others)
-
-                others_details = []
-                for i, (user_id, user_display_name, score) in enumerate(others):
-                    # Give remainder to first user
-                    bonus = points_per_user + (remainder if i == 0 else 0)
-                    new_score = score + bonus
-
-                    cur.execute(
-                        "UPDATE fart_scores SET score=? WHERE user_id=?",
-                        (new_score, user_id),
-                    )
-                    others_details.append(f"{user_display_name}: +{bonus} points")
-
-                conn.commit()
-                conn.close()
-
-                # Create response message
-                response = (
-                    f"🏹 **ROBIN HOOD REDISTRIBUTION!** 🏹\n\n"
-                    f"**Total redistributed:** {total_taken} points\n\n"
-                    f"**TOP 5 TAXED (50% each):**\n" + "\n".join(top_5_details) + "\n\n"
-                    f"**{len(others)} WORKERS REWARDED:**\n"
-                    + "\n".join(others_details[:10])
-                )
-
-                if len(others_details) > 10:
-                    response += f"\n...and {len(others_details) - 10} more!"
-
-                await ctx.send(response)
-                await self.update_fart_leader_role(ctx)
+            await ctx.send(response)
+            await self.update_fart_leader_role(ctx)
         except Exception as e:
             print(f"Error in wealth command: {e}")
             import traceback

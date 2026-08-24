@@ -10,6 +10,7 @@ from openai import OpenAI
 
 import config
 from utils.text import find_best_command_match
+from fart_game.usage import check_usage, mark_usage
 from cogs.fun import (
     parse_to_est_date,
     get_est_date,
@@ -630,37 +631,10 @@ class ShopCog(commands.Cog):
             """)
             await self.bot.db.commit()
 
-    def _ensure_evil_star_table(self, cur):
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS evil_star_usage (
-                user_id INTEGER PRIMARY KEY,
-                used_at TEXT NOT NULL
-            )
-        """)
-
-    def _ensure_donation_usage_table(self, cur):
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS fart_donation_usage (
-                donor_id INTEGER NOT NULL,
-                recipient_id INTEGER NOT NULL,
-                donated_at TEXT NOT NULL,
-                PRIMARY KEY (donor_id, recipient_id)
-            )
-        """)
-
     async def has_used_evil_star(self, user_id: int) -> bool:
         """True if the user sealed the Evil Star pact this season."""
-        conn = sqlite3.connect("fart_scores.db")
-        cur = conn.cursor()
-        try:
-            self._ensure_evil_star_table(cur)
-            cur.execute(
-                "SELECT 1 FROM evil_star_usage WHERE user_id = ?",
-                (user_id,),
-            )
-            return cur.fetchone() is not None
-        finally:
-            conn.close()
+        allowed, _ = check_usage("evil_star", user_id)
+        return not allowed
 
     async def deny_if_evil_star_corrupted(self, ctx) -> bool:
         """
@@ -676,109 +650,19 @@ class ShopCog(commands.Cog):
         return True
 
     async def has_donated_to_this_season(self, donor_id: int, recipient_id: int) -> bool:
-        conn = sqlite3.connect("fart_scores.db")
-        cur = conn.cursor()
-        try:
-            self._ensure_donation_usage_table(cur)
-            cur.execute(
-                "SELECT 1 FROM fart_donation_usage WHERE donor_id = ? AND recipient_id = ?",
-                (donor_id, recipient_id),
-            )
-            return cur.fetchone() is not None
-        finally:
-            conn.close()
+        allowed, _ = check_usage("fart_donation", donor_id, peer_id=recipient_id)
+        return not allowed
 
     async def mark_donated_this_season(self, donor_id: int, recipient_id: int):
-        conn = sqlite3.connect("fart_scores.db")
-        cur = conn.cursor()
-        try:
-            self._ensure_donation_usage_table(cur)
-            cur.execute(
-                "INSERT OR REPLACE INTO fart_donation_usage (donor_id, recipient_id, donated_at) VALUES (?, ?, ?)",
-                (donor_id, recipient_id, datetime.datetime.now().isoformat()),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        mark_usage("fart_donation", donor_id, peer_id=recipient_id)
 
-    async def check_usage_cooldown(self, user_id: int, command_name: str, period: str):
-        """
-        Check daily/weekly command_usage cooldown.
-        Returns (allowed: bool, message: str | None).
-        """
-        conn = sqlite3.connect("fart_scores.db")
-        cur = conn.cursor()
-        try:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS command_usage
-                (user_id INTEGER,
-                 command_name TEXT,
-                 last_used TEXT,
-                 PRIMARY KEY (user_id, command_name))
-            """)
-            cur.execute(
-                "SELECT last_used FROM command_usage WHERE user_id=? AND command_name=?",
-                (user_id, command_name),
-            )
-            row = cur.fetchone()
-            if not row:
-                return True, None
-
-            parsed = safe_parse_datetime(row[0])
-            if not parsed:
-                return True, None
-
-            if period == "daily":
-                last_date = parse_to_est_date(row[0])
-                if last_date == get_est_date():
-                    est_now = get_est_now()
-                    midnight = get_est_midnight()
-                    time_until_next = midnight - est_now
-                    hours = int(time_until_next.total_seconds() // 3600)
-                    minutes = int((time_until_next.total_seconds() % 3600) // 60)
-                    pretty = command_name.replace("_", " ").title()
-                    return False, (
-                        f"You can only use {pretty} once per day! "
-                        f"Try again in **{hours}h {minutes}m** (resets at midnight EST)."
-                    )
-                return True, None
-
-            # weekly
-            last_used_date = parsed.date()
-            next_available = last_used_date + datetime.timedelta(weeks=1)
-            today = datetime.datetime.now().date()
-            if next_available > today:
-                days_remaining = (next_available - today).days
-                if days_remaining < 1:
-                    days_remaining = 1
-                pretty = command_name.replace("_", " ").title()
-                return False, (
-                    f"You can only use {pretty} once per week! "
-                    f"Try again in {days_remaining} day{'s' if days_remaining != 1 else ''}."
-                )
-            return True, None
-        finally:
-            conn.close()
+    async def check_usage_cooldown(self, user_id: int, command_name: str, period: str = None):
+        """Check Action/Item usage from the fart_game class registry."""
+        return check_usage(command_name, user_id)
 
     async def mark_usage_cooldown(self, user_id: int, command_name: str):
-        """Record successful use for daily/weekly cooldowns."""
-        conn = sqlite3.connect("fart_scores.db")
-        cur = conn.cursor()
-        try:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS command_usage
-                (user_id INTEGER,
-                 command_name TEXT,
-                 last_used TEXT,
-                 PRIMARY KEY (user_id, command_name))
-            """)
-            cur.execute(
-                "INSERT OR REPLACE INTO command_usage (user_id, command_name, last_used) VALUES (?, ?, ?)",
-                (user_id, command_name, datetime.datetime.now().isoformat()),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        """Record successful use for the registered ability."""
+        mark_usage(command_name, user_id)
 
     async def get_percent_cost(self, user_id: int, percent: float) -> tuple[int, int]:
         """Return (cost, current_score) for a percent-of-score item. Cost is at least 1."""
@@ -1187,51 +1071,21 @@ class ShopCog(commands.Cog):
                     f"You don't have enough points! Mushroom Boost costs {self.item_costs['mushroom']} points!"
                 )
 
+            allowed, cooldown_msg = await self.check_usage_cooldown(
+                ctx.author.id, "mushroom", "weekly"
+            )
+            if not allowed:
+                return await ctx.send(cooldown_msg)
+
             conn = sqlite3.connect("fart_scores.db")
             cur = conn.cursor()
 
-            # Create lucky charms table if it doesn't exist
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS lucky_charms (
                     user_id INTEGER PRIMARY KEY,
                     activated_at TEXT
                 )
             """)
-
-            # Create weekly usage tracking table
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS lucky_charm_usage (
-                    user_id INTEGER,
-                    command_name TEXT,
-                    last_used TEXT,
-                    PRIMARY KEY (user_id, command_name)
-                )
-            """)
-
-            # Check weekly cooldown
-            cur.execute(
-                "SELECT last_used FROM lucky_charm_usage WHERE user_id = ? AND command_name = 'mushroom'",
-                (ctx.author.id,),
-            )
-            cooldown_result = cur.fetchone()
-
-            if cooldown_result:
-                last_used_date = datetime.datetime.fromisoformat(
-                    cooldown_result[0]
-                ).date()
-                if (
-                    last_used_date + datetime.timedelta(weeks=1)
-                    > datetime.datetime.now().date()
-                ):
-                    days_remaining = (
-                        last_used_date
-                        + datetime.timedelta(weeks=1)
-                        - datetime.datetime.now().date()
-                    ).days
-                    conn.close()
-                    return await ctx.send(
-                        f"You can only use Mushroom Boost once per week! Try again in {days_remaining} day{'s' if days_remaining != 1 else ''}."
-                    )
 
             # Check if user already has an active lucky charm
             cur.execute(
@@ -1255,20 +1109,9 @@ class ShopCog(commands.Cog):
                 "INSERT INTO lucky_charms (user_id, activated_at) VALUES (?, ?)",
                 (ctx.author.id, now.isoformat()),
             )
-
-            # Update weekly usage cooldown
-            cur.execute(
-                """
-                INSERT INTO lucky_charm_usage (user_id, command_name, last_used)
-                VALUES (?, 'mushroom', ?)
-                ON CONFLICT(user_id, command_name) 
-                DO UPDATE SET last_used = ?
-                """,
-                (ctx.author.id, now.isoformat(), now.isoformat()),
-            )
-
             conn.commit()
             conn.close()
+            await self.mark_usage_cooldown(ctx.author.id, "mushroom")
 
             await ctx.send(
                 f" **Mushroom Boost Activated!** \n"
@@ -1740,38 +1583,12 @@ class ShopCog(commands.Cog):
         if target.bot:
             return await ctx.send("You can't take a bot to court!")
 
-        # Weekly cooldown — same command_usage table as !big_banana.
-        # Only blocks if already used successfully; failed attempts never write here.
-        conn = sqlite3.connect("fart_scores.db")
-        cur = conn.cursor()
-        try:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS command_usage
-                (user_id INTEGER,
-                 command_name TEXT,
-                 last_used TEXT,
-                 PRIMARY KEY (user_id, command_name))
-            """)
-            cur.execute(
-                "SELECT last_used FROM command_usage WHERE user_id=? AND command_name='fart_court'",
-                (ctx.author.id,),
-            )
-            row = cur.fetchone()
-            if row:
-                parsed = safe_parse_datetime(row[0])
-                if parsed:
-                    last_used_date = parsed.date()
-                    next_available = last_used_date + datetime.timedelta(weeks=1)
-                    if next_available > datetime.datetime.now().date():
-                        days_remaining = (next_available - datetime.datetime.now().date()).days
-                        if days_remaining < 1:
-                            days_remaining = 1
-                        return await ctx.send(
-                            f"{ctx.author.mention}, you've already used Fart Court this week! "
-                            f"Try again in {days_remaining} day{'s' if days_remaining != 1 else ''}."
-                        )
-        finally:
-            conn.close()
+        # Weekly cooldown — failed attempts never write usage.
+        allowed, cooldown_msg = await self.check_usage_cooldown(
+            ctx.author.id, "fart_court", "weekly"
+        )
+        if not allowed:
+            return await ctx.send(cooldown_msg)
 
         # Star protects the defendant — failed attempts do not consume weekly usage
         if await self.is_protected(target.id):
@@ -1825,11 +1642,8 @@ class ShopCog(commands.Cog):
                 return await ctx.send(
                     f"{ctx.author.mention}, court fell through — couldn't update the payee's score. Weekly usage not spent."
                 )
-            cur.execute(
-                "INSERT OR REPLACE INTO command_usage (user_id, command_name, last_used) VALUES (?, 'fart_court', ?)",
-                (ctx.author.id, datetime.datetime.now().isoformat()),
-            )
             conn.commit()
+            await self.mark_usage_cooldown(ctx.author.id, "fart_court")
         except Exception:
             conn.rollback()
             logger.exception("fart_court failed during score transfer")
@@ -2256,9 +2070,7 @@ class ShopCog(commands.Cog):
             raise
 
     @commands.command(name="giga_fart_cannon", aliases=["gigafartcannon", "giga_cannon", "gigacannon", "fart_cannon", "fartcannon"])
-    @commands.cooldown(
-        1, 86400, commands.BucketType.guild
-    )  # Once per day for the entire server
+    @commands.cooldown(1, 60, commands.BucketType.user)
     async def giga_fart_cannon(self, ctx):
         """Fire the Giga Fart Cannon! Assigns double damage debuff to a random top 5 player. (Once per day for entire server)"""
         logger.debug(f"Giga Fart Cannon command used by {ctx.author.id}")
@@ -2268,6 +2080,12 @@ class ShopCog(commands.Cog):
                 f"{ctx.author.mention}, please use this command in <#{self.fart_channel_id}>."
             )
             return
+
+        allowed, cooldown_msg = await self.check_usage_cooldown(
+            ctx.author.id, "giga_fart_cannon", "daily"
+        )
+        if not allowed:
+            return await ctx.send(cooldown_msg)
 
         try:
             # Get top 5 players
@@ -2308,6 +2126,7 @@ class ShopCog(commands.Cog):
             # Add role to new target
             await target_member.add_roles(giga_role)
             logger.info(f"Added giga target role to {target_id}")
+            await self.mark_usage_cooldown(ctx.author.id, "giga_fart_cannon")
 
             await ctx.send(
                 f"💨 **GIGA FART CANNON FIRED!**\n"
@@ -2437,26 +2256,17 @@ class ShopCog(commands.Cog):
                 return
 
             # Check user's current points
+            if await self.has_used_evil_star(ctx.author.id):
+                await ctx.send(
+                    f"😈 The Evil Star has already granted you its power, {ctx.author.mention}...\n"
+                    f"The dark pact can only be sealed **once per season**.\n"
+                    f"The beast does not offer second chances until the season resets... 💀"
+                )
+                return
+
             conn = sqlite3.connect("fart_scores.db")
             cur = conn.cursor()
             try:
-                self._ensure_evil_star_table(cur)
-
-                # Check if user has already used evil_star this season
-                cur.execute(
-                    "SELECT used_at FROM evil_star_usage WHERE user_id = ?",
-                    (ctx.author.id,),
-                )
-                already_used = cur.fetchone()
-
-                if already_used:
-                    await ctx.send(
-                        f"😈 The Evil Star has already granted you its power, {ctx.author.mention}...\n"
-                        f"The dark pact can only be sealed **once per season**.\n"
-                        f"The beast does not offer second chances until the season resets... 💀"
-                    )
-                    return
-
                 cur.execute(
                     "SELECT score FROM fart_scores WHERE user_id = ?", (ctx.author.id,)
                 )
@@ -2484,14 +2294,8 @@ class ShopCog(commands.Cog):
                     "UPDATE fart_scores SET score = ? WHERE user_id = ?",
                     (new_points, ctx.author.id),
                 )
-
-                # Mark that user has used evil_star this season
-                cur.execute(
-                    "INSERT INTO evil_star_usage (user_id, used_at) VALUES (?, ?)",
-                    (ctx.author.id, datetime.datetime.now().isoformat()),
-                )
-
                 conn.commit()
+                mark_usage("evil_star", ctx.author.id)
 
                 await ctx.send(
                     f"🔥😈 **THE DARK PACT IS SEALED!** 😈🔥\n"
