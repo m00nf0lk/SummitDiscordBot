@@ -194,8 +194,11 @@ class TestUberRareVariantEffects:
         )
 
         assert "LAVASHART ERUPTION" in msg
-        assert "50 damage" in msg
+        assert "Scorched for 50 damage" in msg
+        assert "<@2>" in msg
+        assert "<@99>" in msg
         assert "<@3>" in msg  # star-protected mention
+        assert "Star-shielded" in msg
         assert shop.deduct_damage.await_count == 2
         calls = [call.args for call in shop.deduct_damage.await_args_list]
         assert (2, 50) in calls
@@ -213,7 +216,11 @@ class TestUberRareVariantEffects:
         )
 
         assert "FROSTSHART BLIZZARD" in msg
+        assert "<@2>" in msg
+        assert "<@99>" in msg
         assert "<@3>" in msg
+        assert "Frozen until midnight EST" in msg
+        assert "Star-shielded" in msg
         assert cog.is_frost_frozen(2) is True
         assert cog.is_frost_frozen(99) is True
         assert cog.is_frost_frozen(3) is False

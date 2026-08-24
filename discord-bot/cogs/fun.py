@@ -653,6 +653,19 @@ class FunCog(commands.Cog):
 
     LAVASHART_DAMAGE = 50
 
+    @staticmethod
+    def _format_player_mentions(mentions):
+        """Join Discord player mentions for effect broadcast messages."""
+        if not mentions:
+            return ""
+        return ", ".join(mentions)
+
+    @staticmethod
+    def _format_lavashart_damage_line(mention, actual_damage):
+        if actual_damage == FunCog.LAVASHART_DAMAGE:
+            return mention
+        return f"{mention} (-{actual_damage} pts)"
+
     def _ensure_frost_shart_freeze_table(self, cur):
         cur.execute("""
             CREATE TABLE IF NOT EXISTS frost_shart_freeze (
@@ -762,13 +775,22 @@ class FunCog(commands.Cog):
 
         lines = []
         if hit_players:
+            scorched = [
+                self._format_lavashart_damage_line(mention, actual_damage)
+                for mention, actual_damage in hit_players
+            ]
             lines.append(
-                f"🌋💥 **LAVASHART ERUPTION!** {self.LAVASHART_DAMAGE} damage to "
-                f"{len(hit_players)} player(s)!"
+                "🌋💥 **LAVASHART ERUPTION!** Molten Curio wrath detonates across the "
+                "fart realm — everyone else feels the burn!"
+            )
+            lines.append(
+                f"**Scorched for {self.LAVASHART_DAMAGE} damage:** "
+                f"{self._format_player_mentions(scorched)}"
             )
         if protected_players:
             lines.append(
-                "⭐ " + ", ".join(protected_players) + " were protected by Stars!"
+                f"⭐ **Star-shielded (no damage):** "
+                f"{self._format_player_mentions(protected_players)}"
             )
         if not lines:
             return ""
@@ -798,12 +820,17 @@ class FunCog(commands.Cog):
         lines = []
         if frozen_players:
             lines.append(
-                f"❄🥶 **FROSTSHART BLIZZARD!** {len(frozen_players)} player(s) frozen — "
-                f"no farting or shop items until midnight EST!"
+                "❄🥶 **FROSTSHART BLIZZARD!** Absolute zero ripples outward — "
+                "the unlucky are entombed in glacial stench!"
+            )
+            lines.append(
+                "**Frozen until midnight EST (no farting, no shop items):** "
+                f"{self._format_player_mentions(frozen_players)}"
             )
         if protected_players:
             lines.append(
-                "⭐ " + ", ".join(protected_players) + " were protected by Stars!"
+                f"⭐ **Star-shielded (immune):** "
+                f"{self._format_player_mentions(protected_players)}"
             )
         if not lines:
             return ""
