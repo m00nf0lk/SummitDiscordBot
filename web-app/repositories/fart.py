@@ -5,93 +5,18 @@ import sqlite3
 from pathlib import Path
 from random import randint
 
+from fart_game.abilities import all_actions, all_items, discover_usage_tables
 from webapp_config import FART_SCORES_DB_PATH
 
-# Default effects for fart game commands (JSON-serialized)
-_CMD_EFFECTS = {
-    "fart": {"action": "roll", "formula": "1d100", "points": "roll_value"},
-    "fart_gift": {"action": "gift_roll", "formula": "1d100", "points": "roll_value",
-                  "target": "specified", "uses_daily": True,
-                  "once_per_recipient_per_season": True},
-    "fartprediction": {"action": "prediction", "correct_multiplier": 2, "wrong_multiplier": 0.5},
-    "bullfart": {"action": "bonus", "source": "last_fart_type",
-                 "bonuses": {"curio_shart": 50, "unique": 35, "elite": 25, "exceptional": 15, "ordinary": 10}},
-    "taxes": {"action": "redistribute", "from": "others", "to": "leader", "percent": 20},
-    "wealth": {"action": "redistribute", "from": "top5", "to": "others", "percent": 50},
-}
-
-_SHOP_EFFECTS = {
-    "blue_shell": {"action": "damage", "target": "leader", "formula": "6d20/2"},
-    "red_shell": {"action": "damage", "target": "ahead_1", "formula": "3d20/2"},
-    "green_shell": {"action": "damage", "target": "random_ahead", "formula": "2d20/2"},
-    "banana": {"action": "damage", "target": "random_behind", "formula": "2d20/2"},
-    "big_banana": {"action": "damage", "target": "random_behind", "formula": "4d10"},
-    "star": {"action": "protect", "duration": "72h", "cost_type": "percent", "cost_percent": 10,
-             "blocked_after": "evil_star"},
-    "mushroom": {"action": "buff", "effect": "double_roll", "description": "Next fart rolls twice, take higher"},
-    "bobomb": {"action": "damage", "target": "top5", "formula": "3d20/2"},
-    "fart_star": {"action": "remove_buff", "target": "random_protected", "removes": "star",
-                  "cost_type": "percent", "cost_percent": 10, "blocked_after": "evil_star"},
-    "evil_star": {"action": "conditional", "condition": "score_equals", "value": 666,
-                  "on_true": {"action": "multiply_score", "multiplier": 2},
-                  "cost_type": "free", "once_per_season": True,
-                  "locks_star_commands": True},
-    "thunder_fart": {"action": "damage", "target": "all", "amount": 10},
-    "gas_shield": {"action": "shield", "reflect_percent": 50},
-    "stink_bomb": {"action": "damage", "target": "random_any", "formula": "3d20/2"},
-    "fart_rocket": {"action": "swap_scores", "target": "random"},
-    "fart_lance": {"action": "multi_damage", "target": "ahead_3",
-                   "formulas": ["3d20/2", "2d20/2", "1d20/2"]},
-    "fart_trap": {"action": "trap", "target": "random", "effect": "attack_backfire"},
-    "fart_twister": {"action": "launch", "target": "random",
-                     "damage_formula": "target_score/2", "uses_daily": True},
-    "stink_cloud": {"action": "block_shop", "target": "random", "duration": "24h",
-                    "cost_type": "percent", "cost_percent": 5},
-    "gas_gamble": {"action": "gamble", "win_chance": 40, "win_multiplier": 2, "lose_multiplier": 0},
-    "fart_leech": {"action": "steal", "target": "random", "formula": "2d20/2"},
-    "fart_donation": {"action": "donate", "target": "specified", "cost_type": "custom",
-                      "max_amount": 100, "once_per_recipient_per_season": True},
-    "fart_court": {"action": "court", "target": "specified", "win_chance": 50, "cost_type": "custom"},
-}
+_CMD_EFFECTS = {cls.name: cls.effect for cls in all_actions()}
+_SHOP_EFFECTS = {cls.name: cls.effect for cls in all_items()}
 
 
 class FartRepository:
     """Data access for fart_scores.db."""
 
-    _DEFAULT_SHOP_ITEMS = [
-        # (name, label, description, cost, damage, cooldown)
-        ("blue_shell", "Blue Shell", "Hits the leader with 6d20/2 damage", 20, 0, "daily"),
-        ("red_shell", "Red Shell", "Hits the player directly in front of you with 3d20/2 damage", 10, 0, "none"),
-        ("green_shell", "Green Shell", "Hits a random player in front of you with 2d20/2 damage", 5, 0, "none"),
-        ("banana", "Banana", "Hits a random player behind you with 2d20/2 damage", 5, 0, "none"),
-        ("big_banana", "Big Banana", "Hits a random player behind you with 4d10 damage", 20, 0, "daily"),
-        ("star", "Star", "Protects you from all items for 72 hours (costs 10% of your points). Blocked after Evil Star.", 0, 0, "weekly"),
-        ("mushroom", "Mushroom", "Next fart rolls twice, take higher!", 5, 0, "weekly"),
-        ("bobomb", "Bob-omb", "Hits the top 5 players with 3d20/2 damage", 25, 0, "none"),
-        ("fart_star", "Fart Star", "Removes star protection from a random protected user. Blocked after Evil Star.", 0, 0, "weekly"),
-        ("evil_star", "Evil Star", "Doubles your points if you have exactly 666. Once/season; locks out other stars.", 0, 0, "once_per_season"),
-        ("thunder_fart", "Thunder Fart", "Hits ALL players for 10 damage each", 10, 0, "weekly"),
-        ("gas_shield", "Gas Shield", "Reflects 50% damage back at the next attacker", 8, 0, "none"),
-        ("stink_bomb", "Stink Bomb", "Hits a random player (anyone!) for 3d20/2 damage", 12, 0, "none"),
-        ("fart_rocket", "Fart Rocket", "Swap scores with a random player", 100, 0, "weekly"),
-        ("fart_lance", "Fart Lance", "Hits up to 3 players ahead with diminishing damage", 15, 0, "none"),
-        ("fart_trap", "Fart Trap", "A player's next attack backfires on them!", 20, 0, "none"),
-        ("fart_twister", "Fart Twister", "Launch a player into another! Damage = half launched player's score", 50, 0, "weekly"),
-        ("stink_cloud", "Stink Cloud", "Blocks a random player from shop for 24 hours (5% of points)", 0, 0, "daily"),
-        ("gas_gamble", "Gas Gamble", "40% chance to double your bet, 60% to lose it all", 0, 0, "none"),
-        ("fart_leech", "Fart Leech", "Steal 2d20/2 points from a random player", 5, 0, "daily"),
-        ("fart_donation", "Fart Donation", "Donate points to another player (max 100, once per player per season)", 0, 0, "once_per_season"),
-        ("fart_court", "Fart Court", "50% chance they pay you the amount, 50% chance you pay them", 0, 0, "weekly"),
-    ]
-
-    _DEFAULT_COMMANDS = [
-        ("fart", "Fart", "Roll for random fart points", 0, 0, "daily", 1),
-        ("fart_gift", "Fart Gift", "Roll your daily fart and give the points to another player (once per player per season)", 0, 0, "daily", 2),
-        ("fartprediction", "Fart Prediction", "Predict fart type for 2x or half points", 0, 0, "daily", 3),
-        ("bullfart", "Bull Fart", "Bonus points based on last fart type", 0, 0, "weekly", 4),
-        ("taxes", "Taxes", "Take 20% from everyone else, give it all to the fartlord", 0, 20, "once_per_reign", 5),
-        ("wealth", "Wealth", "Take 50% from top 5, give to everyone else", 0, 50, "once_per_reign", 6),
-    ]
+    _DEFAULT_SHOP_ITEMS = [cls.as_shop_tuple() for cls in all_items()]
+    _DEFAULT_COMMANDS = [cls.as_command_tuple() for cls in all_actions()]
 
     def __init__(self, db_path: Path | str | None = None):
         self._db_path = str(db_path or FART_SCORES_DB_PATH)
@@ -398,24 +323,15 @@ class FartRepository:
     # --- Game management ---
 
     def reset_game(self) -> dict:
-        """Reset the fart game / season — clear scores, history, cooldowns, and season locks."""
+        """Reset the fart game / season — scores, history, and every Action/Item usage table."""
         conn = self._get_connection()
-        tables = [
-            "fart_scores",
-            "fart_history",
-            "command_usage",
-            "lucky_charms",
-            "lucky_charm_usage",
-            "fart_leader_only_once",
-            # Season-scoped locks / status
-            "evil_star_usage",
-            "fart_donation_usage",
-            "fart_gift_usage",
-            "protection_status",
-            "shop_blocks",
-            "gas_shields",
-            "fart_traps",
+        existing = [
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
         ]
+        tables = discover_usage_tables(existing)
         cleared = {}
         for table in tables:
             try:

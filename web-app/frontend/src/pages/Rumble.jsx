@@ -1354,7 +1354,9 @@ function FartAdmin({ data, onRefresh }) {
           <div className="p-3 border border-border rounded-lg">
             <h3 className="text-sm font-semibold mb-1">Reset Game</h3>
             <p className="text-xs text-text-muted mb-3">
-              Clear all fart scores, history, cooldowns, leader tracking, Evil Star locks, donation/gift history, and star/status tables. Players start a fresh season.
+              Clear all scores, history, status effects, and every action/item usage
+              (once/day, once/week, once/season, once/reign). New actions and items
+              are included automatically from their class definitions.
             </p>
             <button
               onClick={handleReset}
