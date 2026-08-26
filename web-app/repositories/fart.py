@@ -401,7 +401,7 @@ class FartRepository:
     _PRESERVE_ON_RESET = frozenset({
         "fart_game_commands",
         "fart_shop_items",
-        # First Curio ever → lavashart/frostshart; then 10% lava/frost + 5% Yourt forever
+        # First Curio ever → 40/40/20 lava/frost/Yourt; then 10% lava/frost + 5% Yourt forever
         "uber_rare_curio_claimed",
     })
 

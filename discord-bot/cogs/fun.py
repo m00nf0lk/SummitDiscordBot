@@ -9,12 +9,16 @@ from random import randrange
 from openai import OpenAI
 
 # Uber-rare Curio Shart variants: the first Curio Shart ever (post-deploy) is
-# always lavashart/frostshart; after that, 10% of Curio Sharts are lava/frost
-# forever and 5% are Yourt. The global claimed flag survives FART GAME RESET
-# (100% never comes back). Each player may receive each lava/frost variant at
-# most once per season; those flags reset with the red Reset Fart Game button.
-UBER_RARE_CURIO_CHANCE = 10  # lavashart / frostshart (combined)
+# always special — 40% lavashart / 40% frostshart / 20% Yourt. After that,
+# 10% of Curio Sharts are lava/frost forever and 5% are Yourt. The global
+# claimed flag survives FART GAME RESET (100% never comes back). Each player
+# may receive each lava/frost variant at most once per season; those flags
+# reset with the red Reset Fart Game button.
+UBER_RARE_CURIO_CHANCE = 10  # lavashart / frostshart (combined, after first)
 YOURT_CURIO_CHANCE = 5
+# First-ever Curio d100: 1-40 lava, 41-80 frost, 81-100 Yourt (40/40/20)
+FIRST_CURIO_LAVA_MAX = 40
+FIRST_CURIO_FROST_MAX = 80
 YOURT_RAMPAGE_SECONDS = 60 * 60
 YOURT_ATTACK_EVERY_SECONDS = 10 * 60
 YOURT_ATTACKS_TOTAL = 6
@@ -680,7 +684,7 @@ class FunCog(commands.Cog):
                 conn.close()
 
     def is_uber_rare_guaranteed_claimed(self):
-        """True once the one-time guaranteed lavashart/frostshart has ever been awarded."""
+        """True once the one-time guaranteed uber-rare Curio has ever been awarded."""
         try:
             conn = sqlite3.connect("fart_scores.db")
             cur = conn.cursor()
@@ -721,10 +725,20 @@ class FunCog(commands.Cog):
             if "conn" in locals():
                 conn.close()
 
+    def pick_first_curio_variant(self, roll=None):
+        """40% lavashart / 40% frostshart / 20% Yourt for the first Curio ever."""
+        roll = randrange(1, 101) if roll is None else roll
+        if roll <= FIRST_CURIO_LAVA_MAX:
+            return "lavashart"
+        if roll <= FIRST_CURIO_FROST_MAX:
+            return "frostshart"
+        return "yourt"
+
     def roll_uber_rare_curio_variant(self, user_id=None):
         """Roll lavashart/frostshart/yourt for a Curio Shart.
 
-        First Curio Shart ever (after deploy): 100% lava/frost, 50/50 (never Yourt).
+        First Curio Shart ever (after deploy): 100% special, 40/40/20
+        lavashart / frostshart / Yourt.
         After that forever:
           - 10% lavashart/frostshart (50/50 between those two)
           - 5% Yourt (skipped if a Yourt rampage is already running)
@@ -734,11 +748,14 @@ class FunCog(commands.Cog):
         """
         claimed = self.is_uber_rare_guaranteed_claimed()
         if not claimed:
-            variant = "lavashart" if randrange(2) == 0 else "frostshart"
-            if self.has_rolled_uber_rare_this_season(user_id, variant):
+            variant = self.pick_first_curio_variant()
+            if variant in ("lavashart", "frostshart"):
+                if self.has_rolled_uber_rare_this_season(user_id, variant):
+                    return None
+                self.mark_uber_rare_rolled_this_season(user_id, variant)
+            elif variant == "yourt" and self.is_yourt_rampage_active():
                 return None
             self.mark_uber_rare_guaranteed_claimed(user_id, variant)
-            self.mark_uber_rare_rolled_this_season(user_id, variant)
             return variant
 
         bucket = randrange(1, 101)

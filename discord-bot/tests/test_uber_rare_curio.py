@@ -44,16 +44,24 @@ class TestUberRareCurioPermanent:
         assert fart_db.is_uber_rare_guaranteed_claimed() is False
 
     def test_first_curio_always_special(self, fart_db):
-        with patch("cogs.fun.randrange", side_effect=[0]):  # lavashart
+        with patch("cogs.fun.randrange", return_value=1):  # 1-40 lavashart
             variant = fart_db.roll_uber_rare_curio_variant(user_id=42)
         assert variant == "lavashart"
         assert fart_db.is_uber_rare_guaranteed_claimed() is True
 
     def test_first_curio_can_be_frostshart(self, fart_db):
-        with patch("cogs.fun.randrange", side_effect=[1]):  # frostshart
+        with patch("cogs.fun.randrange", return_value=41):  # 41-80 frostshart
             variant = fart_db.roll_uber_rare_curio_variant(user_id=7)
         assert variant == "frostshart"
         assert fart_db.is_uber_rare_guaranteed_claimed() is True
+
+    def test_first_curio_40_40_20_boundaries(self, fart_db):
+        assert fart_db.pick_first_curio_variant(1) == "lavashart"
+        assert fart_db.pick_first_curio_variant(40) == "lavashart"
+        assert fart_db.pick_first_curio_variant(41) == "frostshart"
+        assert fart_db.pick_first_curio_variant(80) == "frostshart"
+        assert fart_db.pick_first_curio_variant(81) == "yourt"
+        assert fart_db.pick_first_curio_variant(100) == "yourt"
 
     def test_after_claim_10_percent_miss(self, fart_db):
         fart_db.mark_uber_rare_guaranteed_claimed(1, "lavashart")
@@ -302,7 +310,7 @@ class TestUberRareOncePerSeason:
             assert fart_db.roll_uber_rare_curio_variant(user_id=2) == "frostshart"
 
     def test_first_roll_records_season_flag(self, fart_db):
-        with patch("cogs.fun.randrange", side_effect=[0]):
+        with patch("cogs.fun.randrange", return_value=1):
             assert fart_db.roll_uber_rare_curio_variant(user_id=42) == "lavashart"
         assert fart_db.has_rolled_uber_rare_this_season(42, "lavashart") is True
         assert fart_db.has_rolled_uber_rare_this_season(42, "frostshart") is False
@@ -326,9 +334,18 @@ class TestYourtCurioOdds:
         conn.close()
         assert row == ("lavashart",)
 
-    def test_first_curio_never_yourt(self, fart_db):
-        with patch("cogs.fun.randrange", side_effect=[0]):
-            assert fart_db.roll_uber_rare_curio_variant(user_id=1) == "lavashart"
+    def test_first_curio_can_be_yourt_and_claims_flag(self, fart_db):
+        with patch("cogs.fun.randrange", return_value=81):
+            assert fart_db.roll_uber_rare_curio_variant(user_id=1) == "yourt"
+        assert fart_db.is_uber_rare_guaranteed_claimed() is True
+        conn = sqlite3.connect("fart_scores.db")
+        row = conn.execute(
+            "SELECT variant FROM uber_rare_curio_claimed WHERE id = 1"
+        ).fetchone()
+        conn.close()
+        assert row == ("yourt",)
+        # Yourt is not a once-per-season lava/frost collectible
+        assert fart_db.has_rolled_uber_rare_this_season(1, "yourt") is False
 
     def test_yourt_skipped_while_rampage_active(self, fart_db):
         fart_db.mark_uber_rare_guaranteed_claimed(1, "lavashart")
