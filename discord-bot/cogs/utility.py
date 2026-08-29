@@ -149,11 +149,12 @@ class UtilityCog(commands.Cog):
         embed.add_field(
             name="🎲 Fun System",
             value=(
-                "Daily Actions:\n"
+                "Daily Actions (choose one):\n"
                 "`!fart` - Roll for daily fart points\n"
                 "`!fart_gift @user` - Roll your daily fart for someone else (once/season per player)\n"
                 "`!fartprediction` - Predict fart type for 2x points\n"
-                "`!bullfart` - Get bonus points (weekly)\n\n"
+                "Weekly:\n"
+                "`!bullfart` - Bonus from last fart (once/week, does not use daily action)\n\n"
                 "Shop & Items:\n"
                 "`!fart_shop` - View available items\n"
                 "`!blue_shell` - Hit leader with 6d20/2 (20 pts, once/day)\n"

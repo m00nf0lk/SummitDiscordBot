@@ -15,6 +15,7 @@ _CMD_EFFECTS = {
                   "once_per_recipient_per_season": True},
     "fartprediction": {"action": "prediction", "correct_multiplier": 2, "wrong_multiplier": 0.5},
     "bullfart": {"action": "bonus", "source": "last_fart_type",
+                 "uses_daily": False,
                  "bonuses": {"curio_shart": 50, "unique": 35, "elite": 25, "exceptional": 15, "ordinary": 10}},
     "taxes": {"action": "redistribute", "from": "others", "to": "leader", "percent": 20},
     "wealth": {"action": "redistribute", "from": "top5", "to": "others", "percent": 50},
@@ -88,7 +89,7 @@ class FartRepository:
         ("fart", "Fart", "Roll for random fart points", 0, 0, "daily", 1),
         ("fart_gift", "Fart Gift", "Roll your daily fart and give the points to another player (once per player per season)", 0, 0, "daily", 2),
         ("fartprediction", "Fart Prediction", "Predict fart type for 2x or half points", 0, 0, "daily", 3),
-        ("bullfart", "Bull Fart", "Bonus points based on last fart type", 0, 0, "weekly", 4),
+        ("bullfart", "Bull Fart", "Bonus points based on last fart type (once/week, does not use daily action)", 0, 0, "weekly", 4),
         ("taxes", "Taxes", "Take 20% from everyone else, give it all to the fartlord", 0, 20, "once_per_reign", 5),
         ("wealth", "Wealth", "Take 50% from top 5, give to everyone else", 0, 50, "once_per_reign", 6),
     ]

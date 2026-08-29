@@ -173,6 +173,15 @@ openai = OpenAI(api_key=config.OPENAI_API_KEY)
 
 daily_usage_message = "You have already used your daily action today. The actions are `!fart`, `!fart_gift`, `!fartprediction`. \n Use `!fartrank` to check your score."
 
+# Weekly !bullfart bonus by last rolled fart type. Does not consume the daily action.
+BULLFART_TYPE_POINTS = {
+    "curio_shart": (50, "Curio Shart"),
+    "unique": (35, "Unique Fart"),
+    "elite": (25, "Elite Fart"),
+    "exceptional": (15, "Exceptional Fart"),
+    "ordinary": (10, "Ordinary Fart"),
+}
+
 
 class FunCog(commands.Cog):
     def __init__(self, bot):
@@ -536,6 +545,88 @@ class FunCog(commands.Cog):
             conn.commit()
         finally:
             conn.close()
+
+    def _ensure_command_usage_table(self, cur):
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS command_usage
+                       (user_id INTEGER,
+                        command_name TEXT,
+                        last_used TEXT,
+                        PRIMARY KEY (user_id, command_name))"""
+        )
+
+    def weekly_command_days_remaining(self, user_id, command_name):
+        """Days until a once-per-week command is available. 0 if available now."""
+        conn = sqlite3.connect("fart_scores.db")
+        cur = conn.cursor()
+        try:
+            self._ensure_command_usage_table(cur)
+            cur.execute(
+                "SELECT last_used FROM command_usage WHERE user_id=? AND command_name=?",
+                (user_id, command_name),
+            )
+            row = cur.fetchone()
+            if not row:
+                return 0
+            parsed_datetime = safe_parse_datetime(row[0])
+            if not parsed_datetime:
+                return 0
+            next_available_date = parsed_datetime.date() + datetime.timedelta(weeks=1)
+            today = get_est_date()
+            if next_available_date > today:
+                return (next_available_date - today).days
+            return 0
+        finally:
+            conn.close()
+
+    def record_command_used(self, user_id, command_name, used_at=None):
+        """Record a weekly/daily command_usage timestamp."""
+        if used_at is None:
+            used_at = datetime.datetime.now()
+        conn = sqlite3.connect("fart_scores.db")
+        cur = conn.cursor()
+        try:
+            self._ensure_command_usage_table(cur)
+            cur.execute(
+                "INSERT OR REPLACE INTO command_usage (user_id, command_name, last_used) VALUES (?, ?, ?)",
+                (user_id, command_name, used_at.isoformat()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_last_fart_type(self, user_id):
+        """Most recent fart_history type for this user, or None."""
+        conn = sqlite3.connect("fart_scores.db")
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """SELECT fart_type FROM fart_history
+                   WHERE user_id=?
+                   ORDER BY timestamp DESC
+                   LIMIT 1""",
+                (user_id,),
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
+        except sqlite3.Error:
+            return None
+        finally:
+            conn.close()
+
+    def award_bullfart_bonus(self, user_id, user_display_name):
+        """Award weekly bullfart bonus from last fart type without consuming daily action.
+
+        Returns (points_earned, display_name) or None if the user has never rolled.
+        """
+        last_roll_type = self.get_last_fart_type(user_id)
+        if not last_roll_type:
+            return None
+        points_earned, display_name = BULLFART_TYPE_POINTS.get(
+            last_roll_type, (10, last_roll_type)
+        )
+        self.add_score_points(user_id, user_display_name, points_earned)
+        return points_earned, display_name
 
     async def update_fart_leader_role(self, ctx):
         guild = self.bot.get_guild(self.guild_id)
@@ -1534,7 +1625,7 @@ class FunCog(commands.Cog):
         # Weekly Actions
         embed.add_field(
             name="📆 Weekly Actions",
-            value="`!bullfart` / `!bull_fart` - Bonus points based on last fart (once/week)",
+            value="`!bullfart` / `!bull_fart` - Bonus points based on last fart (once/week, does **not** use your daily action)",
             inline=False,
         )
 
@@ -2048,106 +2139,34 @@ class FunCog(commands.Cog):
 
     @commands.command(aliases=["bull_fart", "fart_bull", "fartbull"])
     async def bullfart(self, ctx):
-        """Use this command only once a week!"""
+        """Weekly bonus based on your last fart. Does not use your daily action."""
         if ctx.channel.id != self.fart_channel_id:
             await ctx.send(
                 f"{ctx.author.mention}, please use the fart commands in <#{self.fart_channel_id}>."
             )
             return
 
-        # Update the last used date in the database
-        now = datetime.datetime.now()
         user_id = ctx.author.id
-        command_name = "bullfart"
-
-        # Connect to the database
-        conn = sqlite3.connect("fart_scores.db")
-        cur = conn.cursor()
-
-        # Create a table to track command usage if it doesn't exist
-        cur.execute(
-            """CREATE TABLE IF NOT EXISTS command_usage
-                       (user_id INTEGER,
-                        command_name TEXT,
-                        last_used TEXT,
-                        PRIMARY KEY (user_id, command_name))"""
-        )
-
-        # Check if the user has used the command before
-        cur.execute(
-            "SELECT last_used FROM command_usage WHERE user_id=? AND command_name=?",
-            (user_id, command_name),
-        )
-        row = cur.fetchone()
-
-        if row:
-            parsed_datetime = safe_parse_datetime(row[0])
-            if parsed_datetime:
-                last_used_date = parsed_datetime.date()
-                next_available_date = last_used_date + datetime.timedelta(weeks=1)
-                # Check if a week has passed since the last use
-                if next_available_date > get_est_date():
-                    days_remaining = (next_available_date - get_est_date()).days
-                    await ctx.send(
-                        f"{ctx.author.mention}, you can only use this command once a week! You can use it again in **{days_remaining} day{'s' if days_remaining != 1 else ''}**."
-                    )
-                    conn.close()
-                    return
-
-        # Get the user's most recent fart from fart_history
-        cur.execute(
-            """SELECT fart_type FROM fart_history 
-               WHERE user_id=? 
-               ORDER BY timestamp DESC 
-               LIMIT 1""",
-            (user_id,),
-        )
-        roll_row = cur.fetchone()
-        print(f"Last roll row: {roll_row}")
-
-        if roll_row:
-            last_roll_type = roll_row[0]
-            print(f"User's last roll type: {last_roll_type}")
-
-            # Map fart_type to points and display name
-            fart_type_mapping = {
-                "curio_shart": (50, "Curio Shart"),
-                "unique": (35, "Unique Fart"),
-                "elite": (25, "Elite Fart"),
-                "exceptional": (15, "Exceptional Fart"),
-                "ordinary": (10, "Ordinary Fart"),
-            }
-
-            if last_roll_type in fart_type_mapping:
-                points_earned, display_name = fart_type_mapping[last_roll_type]
-            else:
-                # Fallback for unexpected values
-                points_earned = 10
-                display_name = last_roll_type
-
-            self.save_fart_score(
-                now, ctx.author.id, ctx.author.global_name, points_earned
-            )
+        days_remaining = self.weekly_command_days_remaining(user_id, "bullfart")
+        if days_remaining > 0:
             await ctx.send(
-                f"You earned a bonus {points_earned} points from using bullfart based on your last fart roll of {display_name}!"
+                f"{ctx.author.mention}, you can only use Bull Fart once per week! "
+                f"Try again in {days_remaining} day{'s' if days_remaining != 1 else ''}."
             )
-        else:
-            # User hasn't rolled yet
+            return
+
+        bonus = self.award_bullfart_bonus(user_id, ctx.author.global_name)
+        if not bonus:
             await ctx.send(
                 f"{ctx.author.mention}, you need to roll a fart first before using bullfart!"
             )
-            conn.close()
             return
 
-        # Update cooldown AFTER successful execution
-        cur.execute(
-            "INSERT OR REPLACE INTO command_usage (user_id, command_name, last_used) VALUES (?, ?, ?)",
-            (user_id, command_name, now.isoformat()),
+        points_earned, display_name = bonus
+        self.record_command_used(user_id, "bullfart")
+        await ctx.send(
+            f"You earned a bonus {points_earned} points from using bullfart based on your last fart roll of {display_name}!"
         )
-
-        conn.commit()
-        conn.close()
-
         await self.update_fart_leader_role(ctx)
 
     @commands.command(aliases=["fart_lord", "lord_fart", "lordfart"])
