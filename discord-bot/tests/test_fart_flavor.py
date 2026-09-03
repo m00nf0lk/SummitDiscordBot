@@ -18,9 +18,11 @@ sys.modules.setdefault(
 
 from cogs.fart_flavor import (  # noqa: E402
     FART_FLAVOR_LINES,
+    FARTLORD_PROCLAMATIONS,
     compose_fart_body,
     fart_roll_blurb,
     pick_fart_flavor,
+    pick_fartlord_proclamation,
 )
 from cogs.fun import FunCog  # noqa: E402
 
@@ -95,3 +97,16 @@ class TestPickAndBlurb:
         )
         assert body.startswith("Curio Shart!")
         assert "You earned 98 points." in body
+
+
+class TestFartlordProclamations:
+    def test_five_unique_proclamations_with_wind_emoji(self):
+        assert len(FARTLORD_PROCLAMATIONS) == 5
+        assert len(set(FARTLORD_PROCLAMATIONS)) == 5
+        for line in FARTLORD_PROCLAMATIONS:
+            assert "💨" in line
+
+    def test_pick_returns_a_known_proclamation(self):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("cogs.fart_flavor.random.choice", lambda seq: seq[2])
+            assert pick_fartlord_proclamation() == FARTLORD_PROCLAMATIONS[2]

@@ -134,3 +134,17 @@ def compose_fart_body(uber_prefix, variant_effect_msg, mushroom_boost_msg, blurb
     if blurb:
         return f"{head}{blurb} {points_clause}"
     return f"{head}{points_clause}"
+
+
+FARTLORD_PROCLAMATIONS = (
+    "I am the Fart Lord! All lesser breezes shall bow, and the air itself pays rent to me! 💨",
+    "By decree of the throne of stink: my reign is fragrant, my word is wind, and my court is packed! 💨",
+    "Let it be known — I sit atop the leaderboard of fumes, and I did not climb here by accident! 💨",
+    "Hear my edict: I am Fart Lord, peak pageantry, a walking weather event, and extremely pleased about it! 💨",
+    "I claim this realm of rumble. Bring tribute, open a window, and address me as your Fart Lord! 💨",
+)
+
+
+def pick_fartlord_proclamation():
+    """Return a random hardcoded !fartlord proclamation."""
+    return random.choice(FARTLORD_PROCLAMATIONS)
