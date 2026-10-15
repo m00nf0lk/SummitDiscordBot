@@ -4,6 +4,7 @@ Core farts ask first. Yes doubles the scored points and stacks with mushroom.
 No and a timeout leave the charge and the daily unused.
 """
 
+import datetime
 import sqlite3
 import sys
 from pathlib import Path
@@ -450,10 +451,32 @@ class TestInventory:
         assert "Reign: open" in text
         assert "Evil Star: open" in text
         assert "Mushroom: none" in text
+        assert "Actions" in text
+        assert "Today" not in text
+        assert "Daily fart: open" in text
+        assert "Daily bullfart: open" in text
+        assert "Weekly star: open" in text
+        assert "Weekly court: open" in text
+        assert "!rank: none yet" in text
+        body_lines = [ln for ln in text.splitlines() if ln and ln != "```"]
+        assert body_lines[-2].startswith("!rank:")
+        assert body_lines[-1] == "================"
         assert "trap" not in text.lower()
         assert "***" not in text
         for line in text.strip("`").splitlines():
             assert len(line) <= 32
+
+        conn = sqlite3.connect("fart_scores.db")
+        flags = conn.execute(
+            "SELECT variant, COUNT(*) FROM uber_rare_curio_season "
+            "WHERE user_id = 5 GROUP BY variant ORDER BY variant"
+        ).fetchall()
+        hits = conn.execute(
+            "SELECT COUNT(*) FROM uber_rare_hits WHERE user_id = 5 AND variant = 'lavashart'"
+        ).fetchone()[0]
+        conn.close()
+        assert flags == [("frostshart", 1), ("lavashart", 1)]
+        assert hits == 2
 
     def test_spent_reign_and_spent_abundance(self, fun):
         fun.grant_abundance(5)
@@ -474,6 +497,70 @@ class TestInventory:
         text = format_fart_inventory(fun.collect_fart_inventory(5))
         assert "Abundance: spent" in text
         assert "Reign: SPENT" in text
+
+    def test_actions_rank_and_spent_shop_timers(self, fun):
+        now = datetime.datetime.now()
+        _insert_score(5, 120, date_last_updated=now.isoformat())
+        _insert_score(9, 400)
+        fun.mark_bullfart_used(5, when=now)
+        week_ago = now - datetime.timedelta(days=8)
+        conn = sqlite3.connect("fart_scores.db")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS command_usage (
+                user_id INTEGER,
+                command_name TEXT,
+                last_used TEXT,
+                PRIMARY KEY (user_id, command_name)
+            )
+        """)
+        conn.execute(
+            "INSERT INTO command_usage VALUES (5, 'star', ?)",
+            (now.isoformat(),),
+        )
+        conn.execute(
+            "INSERT INTO command_usage VALUES (5, 'fart_court', ?)",
+            (week_ago.isoformat(),),
+        )
+        conn.execute(
+            "INSERT INTO command_usage VALUES (5, 'blue_shell', ?)",
+            (now.isoformat(),),
+        )
+        conn.commit()
+        conn.close()
+
+        text = format_fart_inventory(fun.collect_fart_inventory(5))
+        assert "Daily fart: used" in text
+        assert "Daily bullfart: used" in text
+        assert "Daily blue shell: used" in text
+        assert "Weekly star: used" in text
+        assert "Weekly court: open" in text
+        assert "Daily leech: open" in text
+        assert "!rank: #2 · 120" in text
+        rank_at = text.rfind("!rank:")
+        assert rank_at > text.rfind("Uber curios")
+        for line in text.strip("`").splitlines():
+            assert len(line) <= 32
+
+    def test_backfill_turns_old_hits_into_seasonal_flags(self, fun):
+        conn = sqlite3.connect("fart_scores.db")
+        conn.execute("""
+            CREATE TABLE uber_rare_hits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                variant TEXT NOT NULL,
+                hit_at TEXT NOT NULL
+            )
+        """)
+        conn.execute(
+            "INSERT INTO uber_rare_hits (user_id, variant, hit_at) VALUES (5, 'yourt', ?)",
+            (datetime.datetime.now().isoformat(),),
+        )
+        conn.commit()
+        conn.close()
+
+        info = fun.collect_fart_inventory(5)
+        assert "yourt" in info["curio_flags"]
+        assert info["curios"]["yourt"] == 1
 
     @pytest.mark.asyncio
     async def test_inventory_command_sends_the_block(self, fun):
@@ -523,6 +610,19 @@ class TestInventory:
         assert "!abundancefart" not in help_fn
         assert "!fartadmin" not in help_fn
         assert "`!inventory`" in help_fn
+        note = (
+            "Any new curio must be flagged the same way: a per-player "
+            "seasonal flag that the Reset Fart Game button wipes."
+        )
+        assert note in fun_src
+        repo = (root.parent / "web-app" / "repositories" / "fart.py").read_text(
+            encoding="utf-8"
+        )
+        ui = (
+            root.parent / "web-app" / "frontend" / "src" / "pages" / "Rumble.jsx"
+        ).read_text(encoding="utf-8")
+        assert note in repo
+        assert note in ui
         assert "`!fartabundance`" in help_fn
         assert "!abundancefart" not in shop_src
         assert "!fartabundance / " not in shop_src
