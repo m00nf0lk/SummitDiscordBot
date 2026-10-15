@@ -6,6 +6,7 @@ No and a timeout leave the charge and the daily unused.
 
 import sqlite3
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -164,6 +165,17 @@ def _ctx(user_id=7, channel_id=1):
     return ctx
 
 
+def _admin(ctx):
+    ctx.author.guild_permissions.administrator = True
+    return ctx
+
+
+def _player(ctx):
+    ctx.author.guild_permissions.administrator = False
+    ctx.author.roles = []
+    return ctx
+
+
 async def _invoke(cog, name, ctx):
     command = getattr(cog, name)
     await command.callback(cog, ctx)
@@ -234,8 +246,10 @@ class TestFartAbundancePurchase:
         await _invoke(shop, "fartabundance", ctx)
         assert _score(7) == 900
         assert _charges(7) == (7, 7)
-        assert "already bought" in _sent(ctx).lower()
-        assert "!inventory" in _sent(ctx)
+        body = _sent(ctx).lower()
+        assert "already bought" in body
+        assert "7" in _sent(ctx)
+        assert "left this season" in body
 
     @pytest.mark.asyncio
     async def test_spent_charges_still_block_a_rebuy(self, shop):
@@ -246,7 +260,7 @@ class TestFartAbundancePurchase:
         await _invoke(shop, "fartabundance", ctx)
         assert _score(7) == 900
         assert _charges(7) == (0, 7)
-        assert "already bought" in _sent(ctx).lower()
+        assert "already used every" in _sent(ctx).lower()
 
     @pytest.mark.asyncio
     async def test_mushroom_can_be_bought_while_abundance_is_owned(self, shop):
@@ -461,12 +475,105 @@ class TestInventory:
 
     @pytest.mark.asyncio
     async def test_inventory_command_sends_the_block(self, fun):
-        ctx = _ctx(5, fun.fart_channel_id)
+        ctx = _admin(_ctx(5, fun.fart_channel_id))
         await fun.inventory.callback(fun, ctx)
         body = ctx.send.await_args.args[0]
         assert body.startswith("```")
         assert "INVENTORY" in body
         assert "Abundance: not bought" in body
+
+    @pytest.mark.asyncio
+    async def test_inventory_requires_the_admin_role(self, fun):
+        ctx = _player(_ctx(5, fun.fart_channel_id))
+        await fun.inventory.callback(fun, ctx)
+        body = ctx.send.await_args.args[0]
+        assert "admin role" in body
+        assert "INVENTORY" not in body
+
+    @pytest.mark.asyncio
+    async def test_inventory_allows_the_bot_admin_role(self, fun, monkeypatch):
+        monkeypatch.setattr("cogs.fun.config.BOT_ADMIN_ROLE_ID", 4242, raising=False)
+        ctx = _player(_ctx(5, fun.fart_channel_id))
+        role = MagicMock()
+        role.id = 4242
+        ctx.author.roles = [role]
+        await fun.inventory.callback(fun, ctx)
+        assert "INVENTORY" in ctx.send.await_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_inventory_can_look_up_another_player(self, fun):
+        fun.grant_abundance(9)
+        ctx = _admin(_ctx(5, fun.fart_channel_id))
+        target = MagicMock()
+        target.id = 9
+        target.display_name = "Giftee With A Very Long Name"
+        target.global_name = None
+        await fun.inventory.callback(fun, ctx, target)
+        body = ctx.send.await_args.args[0]
+        assert "Abundance: 7/7" in body
+        assert "For:" in body
+        assert "Very Long Name" not in body
+        for line in body.strip("`").splitlines():
+            assert len(line) <= 32
+
+    def test_guide_and_shop_name_only_fartabundance(self):
+        root = Path(__file__).resolve().parents[1]
+        fun_src = (root / "cogs" / "fun.py").read_text(encoding="utf-8")
+        shop_src = (root / "cogs" / "shop.py").read_text(encoding="utf-8")
+        help_fn = fun_src.split("async def helpfart", 1)[1].split(
+            "def _ensure_roll_buff_tables", 1
+        )[0]
+        assert "Admin Commands" not in help_fn
+        assert "!abundancefart" not in help_fn
+        assert "!inventory" not in help_fn
+        assert "`!fartabundance`" in help_fn
+        assert "!abundancefart" not in shop_src
+        assert "!fartabundance / " not in shop_src
+
+
+class TestGiveFart:
+    @pytest.mark.asyncio
+    async def test_admin_adds_points(self, fun):
+        _insert_score(9, 10)
+        ctx = _admin(_ctx(5, fun.fart_channel_id))
+        user = MagicMock()
+        user.id = 9
+        user.bot = False
+        user.mention = "<@9>"
+        user.global_name = "Giftee"
+        user.display_name = "Giftee"
+        fun.update_fart_leader_role = AsyncMock()
+
+        await fun.givefart.callback(fun, ctx, user, 25)
+
+        assert _score(9) == 35
+        body = _sent(ctx)
+        assert "25" in body
+        assert "35" in body
+
+    @pytest.mark.asyncio
+    async def test_non_admin_cannot_give_points(self, fun):
+        _insert_score(9, 10)
+        ctx = _player(_ctx(5, fun.fart_channel_id))
+        user = MagicMock()
+        user.id = 9
+        user.bot = False
+        user.mention = "<@9>"
+        await fun.givefart.callback(fun, ctx, user, 25)
+        assert _score(9) == 10
+        assert "admin role" in _sent(ctx)
+
+    @pytest.mark.asyncio
+    async def test_rejects_non_positive_points(self, fun):
+        _insert_score(9, 10)
+        ctx = _admin(_ctx(5, fun.fart_channel_id))
+        user = MagicMock()
+        user.id = 9
+        user.bot = False
+        user.mention = "<@9>"
+        await fun.givefart.callback(fun, ctx, user, 0)
+        assert _score(9) == 10
+        assert "positive" in _sent(ctx).lower()
 
     def test_abundant_view_buttons(self):
         view = AbundantFartView(5)

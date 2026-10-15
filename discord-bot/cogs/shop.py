@@ -1409,6 +1409,18 @@ class ShopCog(commands.Cog):
             if conn is not None:
                 conn.close()
 
+    def _abundance_already_owned_message(self, mention, fun, user_id):
+        remaining = fun.abundance_charges(user_id)
+        if remaining > 0:
+            noun = "fart" if remaining == 1 else "farts"
+            left = f"You have **{remaining}** abundant {noun} left this season."
+        else:
+            left = "You already used every abundant fart this season."
+        return (
+            f"{PREGNANT_MAN} {mention}, you already bought Fart Abundance "
+            f"this season. {left}"
+        )
+
     @commands.command(
         name="fartabundance",
         aliases=["abundancefart", "fart_abundance", "abundance_fart"],
@@ -1427,8 +1439,7 @@ class ShopCog(commands.Cog):
                 )
             if fun.has_bought_abundance(ctx.author.id):
                 return await ctx.send(
-                    f"{PREGNANT_MAN} {ctx.author.mention}, you already bought Fart Abundance "
-                    f"this season. `!inventory` shows how many doubled farts you have left."
+                    self._abundance_already_owned_message(ctx.author.mention, fun, ctx.author.id)
                 )
 
             if not await self.check_points(ctx.author.id, "fartabundance"):
@@ -1477,8 +1488,7 @@ class ShopCog(commands.Cog):
                 finally:
                     refund_conn.close()
             return await ctx.send(
-                f"{PREGNANT_MAN} {ctx.author.mention}, you already bought Fart Abundance "
-                f"this season. `!inventory` shows how many doubled farts you have left."
+                self._abundance_already_owned_message(ctx.author.mention, fun, ctx.author.id)
             )
 
         if self.yourt_waives_shop_limits():
@@ -2377,7 +2387,7 @@ class ShopCog(commands.Cog):
                 self.item_costs["mushroom"],
             ),
             (
-                f"{PREGNANT_MAN} Fart Abundance (!fartabundance / !abundancefart)",
+                f"{PREGNANT_MAN} Fart Abundance (!fartabundance)",
                 (
                     f"Pay {self.FART_ABUNDANCE_COST}, get {self.FART_ABUNDANCE_REFUND} back. "
                     f"{ABUNDANCE_CHARGES} doubled farts this season. "

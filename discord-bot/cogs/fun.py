@@ -111,7 +111,9 @@ EST = ZoneInfo("America/New_York")
 FART_PLAYER_ROLE_ID = getattr(config, "FART_PLAYER_ROLE_ID", 1555565625278205982)
 FART_GAME_COGS = frozenset({"FunCog", "ShopCog"})
 # Admin-only tools shouldn't tag the admin as a player
-FART_ROLE_EXEMPT_COMMANDS = frozenset({"reset_fart_cooldown"})
+FART_ROLE_EXEMPT_COMMANDS = frozenset(
+    {"reset_fart_cooldown", "inventory", "givefart"}
+)
 
 
 def get_est_now():
@@ -249,14 +251,33 @@ PREGNANT_MAN = "\U0001FAC3"
 ABUNDANCE_CHARGES = 7
 
 
-def format_fart_inventory(info):
+def member_has_fart_admin_role(member) -> bool:
+    """True for the Bot Admin role, or Discord's Administrator permission."""
+    perms = getattr(member, "guild_permissions", None)
+    if perms is not None and getattr(perms, "administrator", None) is True:
+        return True
+    admin_role_id = getattr(config, "BOT_ADMIN_ROLE_ID", None)
+    if admin_role_id is None:
+        return False
+    return any(
+        getattr(role, "id", None) == admin_role_id
+        for role in getattr(member, "roles", []) or []
+    )
+
+
+def format_fart_inventory(info, who=None):
     """Short stacked inventory. A code block keeps phones from reflowing it."""
     lines = [
         "================",
         "INVENTORY",
         "================",
-        "Buffs",
     ]
+    if who:
+        label = str(who).replace("\n", " ").strip()
+        if len(label) > 18:
+            label = label[:17] + "…"
+        lines.append(f"For: {label}")
+    lines.append("Buffs")
     if info["mushroom_active"]:
         lines.append("Mushroom: ARMED")
         lines.append("  next fart, higher")
@@ -1623,11 +1644,10 @@ class FunCog(commands.Cog):
             name=f"{PREGNANT_MAN} Roll Buffs (Shop)",
             value=(
                 "`!mushroom` - Next fart rolls twice, keep the higher (5 pts, once/week)\n"
-                f"`!fartabundance` / `!abundancefart` - Pay 500, get 400 back. "
+                f"`!fartabundance` - Pay 500, get 400 back. "
                 f"{ABUNDANCE_CHARGES} doubled farts this season. "
                 "`!fart`, `!fart_gift`, and `!fartprediction` ask first. "
-                "Stacks with mushroom. Once per season.\n"
-                "`!inventory` / `!inv` - Buffs, charges, season locks, curios"
+                "Stacks with mushroom. Once per season."
             ),
             inline=False,
         )
@@ -1658,13 +1678,6 @@ class FunCog(commands.Cog):
                 "`!taxes` - Take 20% from everyone, give to fartlord (once/reign)\n"
                 "`!wealth` - Redistribute 50% from top 5 (includes you) (once/reign)"
             ),
-            inline=False,
-        )
-
-        # Admin Commands Section
-        embed.add_field(
-            name="🔧 Admin Commands",
-            value="`!reset_fart_cooldown @user` - Reset a user's fart cooldown",
             inline=False,
         )
 
@@ -2388,15 +2401,82 @@ class FunCog(commands.Cog):
         await self.update_fart_leader_role(ctx)
 
     @commands.command(aliases=["fartinventory", "fart_inventory", "inv"])
-    async def inventory(self, ctx):
-        """Show living fart buffs, season locks, and uber-rare curios."""
+    async def inventory(self, ctx, user: discord.Member = None):
+        """Admin: show living fart buffs, season locks, and uber-rare curios.
+
+        Usage: !inventory [@user]
+        """
+        if not member_has_fart_admin_role(ctx.author):
+            await ctx.send(
+                f"{ctx.author.mention}, you need the admin role to use `!inventory`."
+            )
+            return
         if ctx.channel.id != self.fart_channel_id:
             await ctx.send(
                 f"{ctx.author.mention}, please use the fart commands in <#{self.fart_channel_id}>."
             )
             return
-        info = self.collect_fart_inventory(ctx.author.id)
-        await ctx.send(format_fart_inventory(info))
+        target = user or ctx.author
+        who = None
+        if user is not None and user.id != ctx.author.id:
+            who = user.display_name or user.global_name or str(user.id)
+        info = self.collect_fart_inventory(target.id)
+        await ctx.send(format_fart_inventory(info, who=who))
+
+    @inventory.error
+    async def inventory_error(self, ctx, error):
+        if isinstance(error, commands.UserInputError):
+            await ctx.send("Usage: `!inventory` or `!inventory @user`")
+
+    @commands.command(name="givefart", aliases=["give_fart", "give_fart_points"])
+    async def givefart(self, ctx, user: discord.Member = None, points: int = None):
+        """Admin: add fart points to a player. Usage: !givefart @user <points>"""
+        if not member_has_fart_admin_role(ctx.author):
+            await ctx.send(
+                f"{ctx.author.mention}, you need the admin role to use `!givefart`."
+            )
+            return
+        if ctx.channel.id != self.fart_channel_id:
+            await ctx.send(
+                f"{ctx.author.mention}, please use the fart commands in <#{self.fart_channel_id}>."
+            )
+            return
+        if user is None or points is None:
+            await ctx.send("Usage: `!givefart @user <points>`")
+            return
+        if user.bot:
+            await ctx.send("Bots don't keep a fart score.")
+            return
+        if points <= 0:
+            await ctx.send(
+                "Points have to be a positive number. Usage: `!givefart @user <points>`"
+            )
+            return
+
+        display_name = user.global_name or user.display_name or str(user.id)
+        self.add_score_points(user.id, display_name, points)
+        conn = sqlite3.connect("fart_scores.db")
+        try:
+            row = conn.execute(
+                "SELECT score FROM fart_scores WHERE user_id = ?",
+                (user.id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        new_score = row[0] if row else points
+        await ctx.send(
+            f"{ctx.author.mention} gave {user.mention} **{points}** fart points. "
+            f"They now have **{new_score}**."
+        )
+        try:
+            await self.update_fart_leader_role(ctx)
+        except Exception as e:
+            logger.error(f"Error updating leader role after givefart: {e}")
+
+    @givefart.error
+    async def givefart_error(self, ctx, error):
+        if isinstance(error, commands.UserInputError):
+            await ctx.send("Usage: `!givefart @user <points>`")
 
     @commands.command(aliases=["fart_prediction", "prediction_fart", "predictionfart"])
     async def fartprediction(self, ctx):
