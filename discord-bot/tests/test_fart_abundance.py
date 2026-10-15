@@ -455,8 +455,8 @@ class TestInventory:
         assert "Today" not in text
         assert "Daily fart: open" in text
         assert "Daily bullfart: open" in text
-        assert "Weekly star: open" in text
-        assert "Weekly court: open" in text
+        assert "blue shell" not in text.lower()
+        assert "Weekly" not in text
         assert "!rank: none yet" in text
         body_lines = [ln for ln in text.splitlines() if ln and ln != "```"]
         assert body_lines[-2].startswith("!rank:")
@@ -498,12 +498,11 @@ class TestInventory:
         assert "Abundance: spent" in text
         assert "Reign: SPENT" in text
 
-    def test_actions_rank_and_spent_shop_timers(self, fun):
+    def test_actions_are_only_fart_and_bullfart(self, fun):
         now = datetime.datetime.now()
         _insert_score(5, 120, date_last_updated=now.isoformat())
         _insert_score(9, 400)
         fun.mark_bullfart_used(5, when=now)
-        week_ago = now - datetime.timedelta(days=8)
         conn = sqlite3.connect("fart_scores.db")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS command_usage (
@@ -518,10 +517,6 @@ class TestInventory:
             (now.isoformat(),),
         )
         conn.execute(
-            "INSERT INTO command_usage VALUES (5, 'fart_court', ?)",
-            (week_ago.isoformat(),),
-        )
-        conn.execute(
             "INSERT INTO command_usage VALUES (5, 'blue_shell', ?)",
             (now.isoformat(),),
         )
@@ -531,10 +526,11 @@ class TestInventory:
         text = format_fart_inventory(fun.collect_fart_inventory(5))
         assert "Daily fart: used" in text
         assert "Daily bullfart: used" in text
-        assert "Daily blue shell: used" in text
-        assert "Weekly star: used" in text
-        assert "Weekly court: open" in text
-        assert "Daily leech: open" in text
+        assert "blue shell" not in text.lower()
+        assert "Weekly star" not in text
+        assert "leech" not in text.lower()
+        assert "Mushroom: none" in text
+        assert "Abundance: not bought" in text
         assert "!rank: #2 · 120" in text
         rank_at = text.rfind("!rank:")
         assert rank_at > text.rfind("Uber curios")

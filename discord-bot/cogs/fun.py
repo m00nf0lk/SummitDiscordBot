@@ -51,23 +51,13 @@ UBER_RARE_CURIO_VARIANTS = {
 }
 
 
-# !inventory Actions lines: (period, command_usage name or None, label).
+# !inventory Actions lines. Only the limited fart commands.
 # None is the shared daily !fart / !fart_gift / !fartprediction slot.
-# Bullfart has its own daily timer. Shop rows match check_usage_cooldown.
-# Mushroom, Abundance, reign, and Evil Star stay in Buffs / Season.
+# Bullfart has its own daily timer.
+# Mushroom and Abundance stay under Buffs. Shop items are not listed here.
 INVENTORY_ACTIONS = (
-    ("daily", None, "Daily fart"),
-    ("daily", "bullfart", "Daily bullfart"),
-    ("daily", "blue_shell", "Daily blue shell"),
-    ("daily", "big_banana", "Daily big banana"),
-    ("daily", "stink_cloud", "Daily stink cloud"),
-    ("daily", "fart_leech", "Daily leech"),
-    ("weekly", "star", "Weekly star"),
-    ("weekly", "thunder_fart", "Weekly thunder"),
-    ("weekly", "fart_rocket", "Weekly rocket"),
-    ("weekly", "fart_twister", "Weekly twister"),
-    ("weekly", "fart_star", "Weekly fart star"),
-    ("weekly", "fart_court", "Weekly court"),
+    (None, "Daily fart"),
+    ("bullfart", "Daily bullfart"),
 )
 
 # Frostshart duration matches !stink_cloud (naive local now + 24h).
@@ -182,25 +172,6 @@ def is_same_est_calendar_day(date_string, est_date=None):
     if last_date is None:
         return False
     return last_date == (est_date or get_est_date())
-
-
-def usage_period_is_spent(last_used_iso, period, now=None):
-    """True when a command_usage row still blocks.
-
-    daily matches bullfart and shop dailies (same EST calendar day).
-    weekly matches shop weeklies and !fart_court (used within the last 7 local days).
-    """
-    if not last_used_iso:
-        return False
-    if period == "daily":
-        return is_same_est_calendar_day(last_used_iso)
-    if period != "weekly":
-        return False
-    parsed = safe_parse_datetime(str(last_used_iso))
-    if parsed is None:
-        return False
-    today = (now or datetime.datetime.now()).date()
-    return parsed.date() + datetime.timedelta(weeks=1) > today
 
 
 def format_time_until_est_midnight():
@@ -1998,16 +1969,14 @@ class FunCog(commands.Cog):
         finally:
             conn.close()
 
-    def _inventory_actions(self, info, usage):
-        """(label, used) rows for the Actions section."""
+    def _inventory_actions(self, info):
+        """(label, used) rows for the limited fart commands."""
         rows = []
-        for period, command_name, label in INVENTORY_ACTIONS:
+        for command_name, label in INVENTORY_ACTIONS:
             if command_name is None:
                 used = bool(info.get("daily_used"))
-            elif command_name == BULLFART_COMMAND_NAME:
-                used = bool(info.get("bullfart_used"))
             else:
-                used = usage_period_is_spent(usage.get(command_name), period)
+                used = bool(info.get("bullfart_used"))
             rows.append((label, used))
         return rows
 
@@ -2043,7 +2012,7 @@ class FunCog(commands.Cog):
             },
             "curio_flags": [],
             "actions": self._inventory_actions(
-                {"daily_used": False, "bullfart_used": False}, {}
+                {"daily_used": False, "bullfart_used": False}
             ),
             "rank": None,
             "score": None,
@@ -2060,7 +2029,7 @@ class FunCog(commands.Cog):
             info["bullfart_used"] = self.has_used_bullfart_today(user_id)
         except sqlite3.Error:
             pass
-        info["actions"] = self._inventory_actions(info, {})
+        info["actions"] = self._inventory_actions(info)
         try:
             info["frozen"] = self.is_frost_frozen(user_id) is True
         except Exception:
@@ -2068,7 +2037,6 @@ class FunCog(commands.Cog):
 
         conn = sqlite3.connect("fart_scores.db")
         cur = conn.cursor()
-        usage = {}
         try:
             def has_table(name):
                 cur.execute(
@@ -2159,13 +2127,6 @@ class FunCog(commands.Cog):
                 info["curio_flags"] = [row[0] for row in cur.fetchall()]
                 for variant in info["curio_flags"]:
                     info["curios"][variant] = max(info["curios"].get(variant, 0), 1)
-            if has_table("command_usage"):
-                cur.execute(
-                    """SELECT command_name, last_used FROM command_usage
-                       WHERE user_id = ?""",
-                    (user_id,),
-                )
-                usage = {name: last for name, last in cur.fetchall()}
             if has_table("fart_scores"):
                 cur.execute(
                     "SELECT score FROM fart_scores WHERE user_id = ?",
@@ -2181,7 +2142,7 @@ class FunCog(commands.Cog):
                     info["rank"] = cur.fetchone()[0] + 1
         finally:
             conn.close()
-        info["actions"] = self._inventory_actions(info, usage)
+        info["actions"] = self._inventory_actions(info)
         return info
 
     async def offer_abundant_fart(self, ctx, user_id):
