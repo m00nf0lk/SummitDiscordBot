@@ -53,11 +53,13 @@ UBER_RARE_CURIO_VARIANTS = {
 
 # !inventory Actions lines. Only the limited fart commands.
 # None is the shared daily !fart / !fart_gift / !fartprediction slot.
-# Bullfart has its own weekly timer.
-# Mushroom and Abundance stay under Buffs. Shop items are not listed here.
+# Bullfart, Fart Twister, and Fart Court each have their own weekly timer.
+# Mushroom and Abundance stay under Buffs. Other shop items are not listed.
 INVENTORY_ACTIONS = (
     (None, "Daily fart"),
     ("bullfart", "Weekly bullfart"),
+    ("fart_twister", "Weekly twister"),
+    ("fart_court", "Weekly court"),
 )
 
 # Frostshart duration matches !stink_cloud (naive local now + 24h).
@@ -785,18 +787,15 @@ class FunCog(commands.Cog):
                     PRIMARY KEY (user_id, command_name))"""
         )
 
-    def bullfart_days_left(self, user_id):
-        """Days left on the weekly !bullfart lock. 0 means it is open.
-
-        Independent of the daily fart action.
-        """
+    def weekly_command_days_left(self, user_id, command_name):
+        """Days left on a once-per-week command_usage lock. 0 means it is open."""
         conn = sqlite3.connect("fart_scores.db")
         try:
             cur = conn.cursor()
             self._ensure_command_usage_table(cur)
             cur.execute(
                 "SELECT last_used FROM command_usage WHERE user_id=? AND command_name=?",
-                (user_id, BULLFART_COMMAND_NAME),
+                (user_id, command_name),
             )
             row = cur.fetchone()
             if not row:
@@ -805,9 +804,20 @@ class FunCog(commands.Cog):
         finally:
             conn.close()
 
+    def bullfart_days_left(self, user_id):
+        """Days left on the weekly !bullfart lock. 0 means it is open.
+
+        Independent of the daily fart action.
+        """
+        return self.weekly_command_days_left(user_id, BULLFART_COMMAND_NAME)
+
     def has_used_bullfart_this_week(self, user_id):
         """True if !bullfart is still inside its one-week lock."""
         return self.bullfart_days_left(user_id) > 0
+
+    def has_used_weekly_command(self, user_id, command_name):
+        """True if this command is still inside its one-week lock."""
+        return self.weekly_command_days_left(user_id, command_name) > 0
 
     def mark_bullfart_used(self, user_id, when=None):
         when = when or datetime.datetime.now()
@@ -1999,7 +2009,7 @@ class FunCog(commands.Cog):
             if command_name is None:
                 used = bool(info.get("daily_used"))
             else:
-                used = bool(info.get("bullfart_used"))
+                used = bool(info.get(f"{command_name}_used"))
             rows.append((label, used))
         return rows
 
@@ -2028,6 +2038,8 @@ class FunCog(commands.Cog):
             "clouded": False,
             "daily_used": False,
             "bullfart_used": False,
+            "fart_twister_used": False,
+            "fart_court_used": False,
             "reign_spent": False,
             "evil_star": False,
             "curios": {
@@ -2035,7 +2047,12 @@ class FunCog(commands.Cog):
             },
             "curio_flags": [],
             "actions": self._inventory_actions(
-                {"daily_used": False, "bullfart_used": False}
+                {
+                    "daily_used": False,
+                    "bullfart_used": False,
+                    "fart_twister_used": False,
+                    "fart_court_used": False,
+                }
             ),
             "rank": None,
             "score": None,
@@ -2050,6 +2067,18 @@ class FunCog(commands.Cog):
             pass
         try:
             info["bullfart_used"] = self.has_used_bullfart_this_week(user_id)
+        except sqlite3.Error:
+            pass
+        try:
+            info["fart_twister_used"] = self.has_used_weekly_command(
+                user_id, "fart_twister"
+            )
+        except sqlite3.Error:
+            pass
+        try:
+            info["fart_court_used"] = self.has_used_weekly_command(
+                user_id, "fart_court"
+            )
         except sqlite3.Error:
             pass
         info["actions"] = self._inventory_actions(info)
