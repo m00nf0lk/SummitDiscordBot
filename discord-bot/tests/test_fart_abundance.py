@@ -455,6 +455,8 @@ class TestInventory:
         assert "Today" not in text
         assert "Daily fart: open" in text
         assert "Weekly bullfart: open" in text
+        assert "Weekly twister: open" in text
+        assert "Weekly court: open" in text
         assert "blue shell" not in text.lower()
         assert "Weekly star" not in text
         assert "!rank: none yet" in text
@@ -520,12 +522,23 @@ class TestInventory:
             "INSERT INTO command_usage VALUES (5, 'blue_shell', ?)",
             (now.isoformat(),),
         )
+        conn.execute(
+            "INSERT INTO command_usage VALUES (5, 'fart_twister', ?)",
+            (now.isoformat(),),
+        )
+        week_ago = (now - datetime.timedelta(days=8)).isoformat()
+        conn.execute(
+            "INSERT INTO command_usage VALUES (5, 'fart_court', ?)",
+            (week_ago,),
+        )
         conn.commit()
         conn.close()
 
         text = format_fart_inventory(fun.collect_fart_inventory(5))
         assert "Daily fart: used" in text
         assert "Weekly bullfart: used" in text
+        assert "Weekly twister: used" in text
+        assert "Weekly court: open" in text
         assert "blue shell" not in text.lower()
         assert "Weekly star" not in text
         assert "leech" not in text.lower()
